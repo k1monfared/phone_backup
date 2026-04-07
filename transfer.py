@@ -111,10 +111,13 @@ def transfer_folder(
     delete_source: bool = False,
     progress_callback: Callable[[], None] = None,
     log_callback: Callable[[str], None] = None,
+    cancel_event=None,
 ) -> None:
     clean_tmp_files(dst_folder)
     files = enumerate_files(src_folder)
     for src_file in files:
+        if cancel_event and cancel_event.is_set():
+            return
         rel_path = src_file.relative_to(src_folder)
         dst_file = dst_folder / rel_path
         stats.current_file = src_file.name

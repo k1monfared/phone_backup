@@ -117,6 +117,30 @@ def backup_ui(stdscr):
         items.append({"source": e["source"], "dest": e["dest"], "checked": True, "section": "move"})
     config_changed = False
 
+    # Background folder size scanning
+    folder_sizes = {}  # source -> (count, bytes) or None if still scanning
+
+    def scan_folder_size(source):
+        path = mount_path / source
+        count = 0
+        total = 0
+        if path.exists():
+            try:
+                for f in path.rglob("*"):
+                    if f.is_file() and not f.name.startswith(".tmp_"):
+                        count += 1
+                        try:
+                            total += f.stat().st_size
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+        folder_sizes[source] = (count, total)
+
+    for it in items:
+        t = threading.Thread(target=scan_folder_size, args=(it["source"],), daemon=True)
+        t.start()
+
     def save_config_from_items():
         """Save current item assignments back to the YAML config."""
         from config_manager import save_phone_config
@@ -183,21 +207,27 @@ def backup_ui(stdscr):
             if section != last_section:
                 if section == "sync":
                     display_lines.append(("header", None,
-                        f"  Sync ({len(sync_items)} folders, keep on phone)", CYAN | BOLD))
+                        f"  Sync ({len(sync_items)} folders, keep on phone)", CYAN | BOLD, ""))
                 else:
                     display_lines.append(("header", None,
-                        f"  Move ({len(move_items)} folders, delete from phone)", CYAN | BOLD))
+                        f"  Move ({len(move_items)} folders, delete from phone)", CYAN | BOLD, ""))
                 last_section = section
                 last_dest = None
             if it["dest"] != last_dest:
-                display_lines.append(("group", None, f"    {it['dest']}/", DIM))
+                display_lines.append(("group", None, f"    {it['dest']}/", DIM, ""))
                 last_dest = it["dest"]
             check = "[x]" if it["checked"] else "[ ]"
-            display_lines.append(("item", i, f"      {check} {it['source']}", curses.A_NORMAL))
+            size_info = folder_sizes.get(it["source"])
+            if size_info is not None:
+                cnt, byt = size_info
+                size_str = f"{cnt} files, {format_size(byt)}"
+            else:
+                size_str = "..."
+            display_lines.append(("item", i, f"      {check} {it['source']}", curses.A_NORMAL, size_str))
 
         # Find which display line the cursor is on
         cursor_display_line = 0
-        for dl_idx, (dtype, item_idx, _, _) in enumerate(display_lines):
+        for dl_idx, (dtype, item_idx, _, _, _) in enumerate(display_lines):
             if dtype == "item" and item_idx == cursor:
                 cursor_display_line = dl_idx
                 break
@@ -213,10 +243,21 @@ def backup_ui(stdscr):
         for dl_idx in range(scroll_offset, len(display_lines)):
             if rendered_row >= list_bottom:
                 break
-            dtype, item_idx, text, attr = display_lines[dl_idx]
-            if dtype == "item" and tab == 0 and item_idx == cursor:
+            dtype, item_idx, text, attr, size_str = display_lines[dl_idx]
+            is_cursor = dtype == "item" and tab == 0 and item_idx == cursor
+            if is_cursor:
                 attr = REVERSE
-            stdscr.addstr(rendered_row, 0, text[:max_x - 1], attr)
+
+            if size_str:
+                # Right-align size string
+                pad = max_x - 1 - len(text) - len(size_str) - 1
+                if pad > 0:
+                    line_str = text + " " * pad + size_str
+                else:
+                    line_str = text
+                stdscr.addstr(rendered_row, 0, line_str[:max_x - 1], attr)
+            else:
+                stdscr.addstr(rendered_row, 0, text[:max_x - 1], attr)
             rendered_row += 1
 
         # Actions bar
@@ -376,6 +417,7 @@ def backup_ui(stdscr):
                 delete_source=delete,
                 progress_callback=on_progress,
                 log_callback=on_log,
+                cancel_event=cancel,
             )
         log_file.write(f"--- Transfer finished {datetime.now().isoformat()} ---\n")
         log_file.close()
