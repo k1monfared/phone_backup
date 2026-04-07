@@ -93,20 +93,24 @@ def backup_ui(stdscr):
     phone_id = phone["phone_id"]
     display_name = phone["display_name"]
 
-    # Detect transfer backend
+    # Detect transfer backend (show status while checking)
+    stdscr.addstr(0, 0, f" Connected: {display_name}", BOLD | GREEN)
+    stdscr.addstr(2, 0, " Detecting transfer backend...", DIM)
+    stdscr.refresh()
+
     backend = detect_transfer_backend()
     adb_serial = None
     if backend == "adb":
         adb_serial = detect_adb_device()
-    elif shutil.which("adb") and not detect_adb_device():
-        # adb is installed but phone not connected via adb
+    elif shutil.which("adb") and backend != "adb":
+        stdscr.erase()
         stdscr.addstr(0, 0, f" Connected: {display_name}", BOLD | GREEN)
         stdscr.addstr(2, 0, " adb is available but your phone is not connected via USB debugging.", YELLOW)
         stdscr.addstr(3, 0, " Enabling USB debugging makes transfers 2-5x faster.")
         stdscr.addstr(5, 0, " To enable: Settings > Developer Options > USB Debugging > ON")
         stdscr.addstr(6, 0, " (If you don't see Developer Options: Settings > About Phone > tap Build Number 7 times)")
         stdscr.addstr(8, 0, " Then reconnect USB cable and accept the prompt on your phone.")
-        stdscr.addstr(10, 0, " Press 'r' to retry adb detection, or any other key to continue with gio.", DIM)
+        stdscr.addstr(10, 0, " Press 'r' to retry adb detection, or any other key to continue.", DIM)
         stdscr.refresh()
         key = stdscr.getch()
         if key == ord("r") or key == ord("R"):
@@ -142,29 +146,29 @@ def backup_ui(stdscr):
         items.append({"source": e["source"], "dest": e["dest"], "checked": True, "section": "move"})
     config_changed = False
 
-    # Background folder size scanning
-    folder_sizes = {}  # source -> (count, bytes) or None if still scanning
+    # Background folder size scanning (single thread to avoid overwhelming MTP)
+    folder_sizes = {}
 
-    def scan_folder_size(source):
-        path = mount_path / source
-        count = 0
-        total = 0
-        if path.exists():
-            try:
-                for f in path.rglob("*"):
-                    if f.is_file() and not f.name.startswith(".tmp_"):
-                        count += 1
-                        try:
-                            total += f.stat().st_size
-                        except OSError:
-                            pass
-            except OSError:
-                pass
-        folder_sizes[source] = (count, total)
+    def scan_all_folder_sizes():
+        for it in items:
+            source = it["source"]
+            path = mount_path / source
+            count = 0
+            total = 0
+            if path.exists():
+                try:
+                    for f in path.rglob("*"):
+                        if f.is_file() and not f.name.startswith(".tmp_"):
+                            count += 1
+                            try:
+                                total += f.stat().st_size
+                            except OSError:
+                                pass
+                except OSError:
+                    pass
+            folder_sizes[source] = (count, total)
 
-    for it in items:
-        t = threading.Thread(target=scan_folder_size, args=(it["source"],), daemon=True)
-        t.start()
+    threading.Thread(target=scan_all_folder_sizes, daemon=True).start()
 
     def save_config_from_items():
         """Save current item assignments back to the YAML config."""
