@@ -11,8 +11,10 @@ Connect your phone, run the tool, select folders, and go.
   - Arrow keys to browse, spacebar to toggle, s/m to reassign folders between sections
   - Folder sizes scanned in background
   - Progress bar with ETA during transfers
-- Safe transfers: copies to temp file first, verifies size, then renames. Source files are never deleted until the copy is confirmed.
+- Three transfer backends, auto-selected for best speed
+- Safe transfers: copies to temp file first, verifies size, then renames
 - Incremental: skips files already backed up (same name and size)
+- No filename collisions: moved files go into dated folders
 - Config editor mode to manage multiple phones
 
 ## Screenshots
@@ -58,6 +60,63 @@ python phone_backup.py          # Main backup interface
 python phone_backup.py config   # Edit phone configs
 ```
 
+## Transfer Backends
+
+The tool auto-detects the fastest available method for copying files:
+
+| Backend | Speed | Requirements |
+|---|---|---|
+| **adb** | Fastest (2-5x) | USB debugging enabled on phone |
+| **gio** | Fast | `gio` command (most Linux desktops) |
+| **python** | Fallback | Always works, no extras needed |
+
+### adb (fastest)
+
+Uses Android Debug Bridge to pull files directly, bypassing MTP. 2-5x faster than MTP for large transfers.
+
+To enable USB debugging on your phone:
+1. Go to **Settings > About Phone**, tap **Build Number** 7 times to unlock Developer Options
+2. Go to **Settings > Developer Options**, enable **USB Debugging**
+3. Reconnect the USB cable and accept the prompt on your phone
+
+The tool detects adb automatically and prompts you with these instructions if adb is installed but the phone is not connected via USB debugging.
+
+### gio (fast)
+
+Uses the GVFS optimized MTP backend via the `gio` command. Faster than reading through the FUSE mount with Python. Available on most Linux desktops with GNOME or similar. No extra setup needed.
+
+### python (fallback)
+
+Reads and writes files directly through the MTP FUSE mount using 4MB chunks. Slowest but always works.
+
+## Backup Structure
+
+Backups are organized per phone under `BACKUP_BASE` (default `~/backup/`):
+
+```
+~/backup/<phone_id>/
+  sync/                          # synced folders (overwritten in place)
+    audio/music/
+    documents/
+    ...
+  move/                          # moved folders in dated subfolders
+    2026-04-06/
+      photos/camera/
+      audio/recordings/
+    2026-04-07/
+      photos/camera/
+```
+
+Sync folders are updated in place on each run. Move folders go into a dated subfolder (`YYYY-MM-DD`), so a new photo with the same filename as an old one never overwrites the old backup.
+
+## Safety
+
+- All copies go through a temp file (`.tmp_` prefix) first. The temp file is verified (size check) before being renamed to the final name.
+- Source files on the phone are never deleted until the copy is confirmed.
+- If the transfer is interrupted (disconnect, crash, Ctrl+C), no files are lost. Partial `.tmp_` files are cleaned up on the next run.
+- Existing files with the same name and size are skipped (incremental backup).
+- Move backups use dated folders, preventing filename collisions across backup sessions.
+
 ## Keyboard Controls
 
 | Key | Action |
@@ -99,9 +158,9 @@ Edit the top of `phone_backup.py` to change:
 
 ```
 phone_backup.py          # main script with terminal UI
-detector.py              # MTP phone detection via GVFS
+detector.py              # MTP phone detection via GVFS, adb detection
 config_manager.py        # YAML config management and folder mapping
-transfer.py              # safe file transfer engine with progress
+transfer.py              # safe file transfer with three backends
 phones/                  # per-phone config files (private submodule)
 docs/example_config.yaml # sample config for reference
 tests/                   # test suite (33 tests)
@@ -112,3 +171,4 @@ tests/                   # test suite (33 tests)
 - Python 3.12+
 - PyYAML
 - Linux with GVFS (for MTP phone access)
+- Optional: adb (Android Debug Bridge) for faster transfers
