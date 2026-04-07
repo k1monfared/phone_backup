@@ -1,5 +1,7 @@
 """Detect MTP-connected Android phones via GVFS."""
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -58,3 +60,37 @@ def get_storage_roots(mount_path: Path) -> list[str]:
         entry.name for entry in mount_path.iterdir()
         if entry.is_dir() and not entry.name.startswith(".")
     )
+
+
+def detect_adb_device() -> str | None:
+    """
+    Check if a real phone (not emulator) is connected via adb.
+    Returns the device serial or None.
+    """
+    if not shutil.which("adb"):
+        return None
+    try:
+        result = subprocess.run(
+            ["adb", "devices"], capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.strip().splitlines()[1:]:
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "device":
+                serial = parts[0]
+                if not serial.startswith("emulator"):
+                    return serial
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return None
+
+
+def detect_transfer_backend() -> str:
+    """
+    Detect the best available transfer backend.
+    Returns "adb", "gio", or "python".
+    """
+    if detect_adb_device():
+        return "adb"
+    if shutil.which("gio"):
+        return "gio"
+    return "python"

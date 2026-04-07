@@ -1,5 +1,5 @@
 """Safe file transfer engine with progress tracking."""
-import shutil
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,24 +62,27 @@ def should_skip_file(src: Path, dst: Path) -> bool:
     return src.stat().st_size == dst.stat().st_size
 
 
-def safe_copy_file(
+# ---------------------------------------------------------------------------
+# Copy backends
+# ---------------------------------------------------------------------------
+
+def _copy_python(
     src: Path,
     dst: Path,
     progress_callback: Callable[[int], None] = None,
-    chunk_size: int = 1024 * 1024,
+    chunk_size: int = 4 * 1024 * 1024,
 ) -> bool:
+    """Copy via Python file I/O. Slowest but always works."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp_dst = dst.parent / f".tmp_{dst.name}"
     try:
         src_size = src.stat().st_size
-        copied = 0
         with open(src, "rb") as fsrc, open(tmp_dst, "wb") as fdst:
             while True:
                 chunk = fsrc.read(chunk_size)
                 if not chunk:
                     break
                 fdst.write(chunk)
-                copied += len(chunk)
                 if progress_callback:
                     progress_callback(len(chunk))
         tmp_size = tmp_dst.stat().st_size
@@ -92,6 +95,110 @@ def safe_copy_file(
         tmp_dst.unlink(missing_ok=True)
         return False
 
+
+def _copy_gio(src: Path, dst: Path) -> bool:
+    """Copy via gio (GVFS optimized MTP backend). Faster than Python I/O."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dst = dst.parent / f".tmp_{dst.name}"
+    try:
+        src_size = src.stat().st_size
+        result = subprocess.run(
+            ["gio", "copy", str(src), str(tmp_dst)],
+            capture_output=True, timeout=600,
+        )
+        if result.returncode != 0:
+            tmp_dst.unlink(missing_ok=True)
+            return False
+        tmp_size = tmp_dst.stat().st_size
+        if tmp_size != src_size:
+            tmp_dst.unlink(missing_ok=True)
+            return False
+        tmp_dst.rename(dst)
+        return True
+    except (subprocess.TimeoutExpired, OSError):
+        tmp_dst.unlink(missing_ok=True)
+        return False
+
+
+def _mtp_source_to_adb_path(src: Path) -> str | None:
+    """
+    Convert an MTP mount path to an adb-compatible path.
+    /run/user/1000/gvfs/mtp:host=.../Internal shared storage/DCIM/Camera/photo.jpg
+    -> /sdcard/DCIM/Camera/photo.jpg
+
+    Both "Internal shared storage" and "android" storage roots map to /sdcard/.
+    """
+    parts = src.parts
+    # Find the storage root (after the mtp:host=... directory)
+    mtp_idx = None
+    for i, p in enumerate(parts):
+        if p.startswith("mtp:host="):
+            mtp_idx = i
+            break
+    if mtp_idx is None:
+        return None
+    # parts after mtp:host=... are: storage_root / rest_of_path
+    after_mtp = parts[mtp_idx + 1:]
+    if len(after_mtp) < 2:
+        return None
+    # Skip the storage root name, rest maps to /sdcard/
+    rest = "/".join(after_mtp[1:])
+    return f"/sdcard/{rest}"
+
+
+def _copy_adb(src: Path, dst: Path, adb_serial: str = None) -> bool:
+    """Copy via adb pull. Fastest, requires USB debugging enabled."""
+    adb_path = _mtp_source_to_adb_path(src)
+    if adb_path is None:
+        return False
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dst = dst.parent / f".tmp_{dst.name}"
+    try:
+        cmd = ["adb"]
+        if adb_serial:
+            cmd.extend(["-s", adb_serial])
+        cmd.extend(["pull", adb_path, str(tmp_dst)])
+
+        result = subprocess.run(cmd, capture_output=True, timeout=600)
+        if result.returncode != 0:
+            tmp_dst.unlink(missing_ok=True)
+            return False
+
+        # Verify size against the MTP-visible source
+        src_size = src.stat().st_size
+        tmp_size = tmp_dst.stat().st_size
+        if tmp_size != src_size:
+            tmp_dst.unlink(missing_ok=True)
+            return False
+        tmp_dst.rename(dst)
+        return True
+    except (subprocess.TimeoutExpired, OSError):
+        tmp_dst.unlink(missing_ok=True)
+        return False
+
+
+def safe_copy_file(
+    src: Path,
+    dst: Path,
+    backend: str = "python",
+    adb_serial: str = None,
+    progress_callback: Callable[[int], None] = None,
+) -> bool:
+    """
+    Copy a file safely using the specified backend.
+    All backends use temp file + rename for crash safety.
+    """
+    if backend == "adb" and adb_serial:
+        return _copy_adb(src, dst, adb_serial)
+    if backend == "gio":
+        return _copy_gio(src, dst)
+    return _copy_python(src, dst, progress_callback=progress_callback)
+
+
+# ---------------------------------------------------------------------------
+# Cleanup and folder transfer
+# ---------------------------------------------------------------------------
 
 def clean_tmp_files(folder: Path) -> int:
     count = 0
@@ -109,6 +216,8 @@ def transfer_folder(
     dst_folder: Path,
     stats: TransferStats,
     delete_source: bool = False,
+    backend: str = "python",
+    adb_serial: str = None,
     progress_callback: Callable[[], None] = None,
     log_callback: Callable[[str], None] = None,
     cancel_event=None,
@@ -131,11 +240,18 @@ def transfer_folder(
             if progress_callback:
                 progress_callback()
             continue
+
         def on_chunk(chunk_bytes):
             stats.current_file_copied += chunk_bytes
             if progress_callback:
                 progress_callback()
-        success = safe_copy_file(src_file, dst_file, progress_callback=on_chunk)
+
+        success = safe_copy_file(
+            src_file, dst_file,
+            backend=backend,
+            adb_serial=adb_serial,
+            progress_callback=on_chunk,
+        )
         if success:
             stats.file_done(src_file.stat().st_size)
             if log_callback:

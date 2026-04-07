@@ -10,7 +10,7 @@ import termios
 from pathlib import Path
 from datetime import datetime
 
-from detector import detect_phones
+from detector import detect_phones, detect_adb_device, detect_transfer_backend
 from config_manager import (
     create_phone_config,
     load_phone_config,
@@ -19,6 +19,7 @@ from transfer import (
     TransferStats,
     transfer_folder,
 )
+import shutil
 
 
 # --- USER-CONFIGURABLE PARAMETERS -------------------------------------------
@@ -91,6 +92,30 @@ def backup_ui(stdscr):
     phone = phones[0]
     phone_id = phone["phone_id"]
     display_name = phone["display_name"]
+
+    # Detect transfer backend
+    backend = detect_transfer_backend()
+    adb_serial = None
+    if backend == "adb":
+        adb_serial = detect_adb_device()
+    elif shutil.which("adb") and not detect_adb_device():
+        # adb is installed but phone not connected via adb
+        stdscr.addstr(0, 0, f" Connected: {display_name}", BOLD | GREEN)
+        stdscr.addstr(2, 0, " adb is available but your phone is not connected via USB debugging.", YELLOW)
+        stdscr.addstr(3, 0, " Enabling USB debugging makes transfers 2-5x faster.")
+        stdscr.addstr(5, 0, " To enable: Settings > Developer Options > USB Debugging > ON")
+        stdscr.addstr(6, 0, " (If you don't see Developer Options: Settings > About Phone > tap Build Number 7 times)")
+        stdscr.addstr(8, 0, " Then reconnect USB cable and accept the prompt on your phone.")
+        stdscr.addstr(10, 0, " Press 'r' to retry adb detection, or any other key to continue with gio.", DIM)
+        stdscr.refresh()
+        key = stdscr.getch()
+        if key == ord("r") or key == ord("R"):
+            adb_serial = detect_adb_device()
+            if adb_serial:
+                backend = "adb"
+
+    backend_labels = {"adb": "adb (fastest)", "gio": "gio (fast)", "python": "python (slow)"}
+    backend_label = backend_labels.get(backend, backend)
 
     PHONES_DIR.mkdir(parents=True, exist_ok=True)
     config = load_phone_config(phone_id, PHONES_DIR)
@@ -181,7 +206,7 @@ def backup_ui(stdscr):
         max_y, max_x = stdscr.getmaxyx()
 
         # Header
-        header = f" Connected: {display_name} ({phone_id})"
+        header = f" Connected: {display_name} | Transfer: {backend_label}"
         stdscr.addstr(0, 0, header[:max_x - 1], BOLD | GREEN)
 
         if undecided:
@@ -353,10 +378,15 @@ def backup_ui(stdscr):
         return None
 
     # Build transfer tasks
+    backup_root = Path(config["backup_root"])
+    today = datetime.now().strftime("%Y-%m-%d")
     tasks = []
     for it in selected:
         src = mount_path / it["source"]
-        dst = Path(config["backup_root"]) / it["dest"]
+        if it["section"] == "move":
+            dst = backup_root / "move" / today / it["dest"]
+        else:
+            dst = backup_root / "sync" / it["dest"]
         delete = it["section"] == "move"
         tasks.append((src, dst, delete))
 
@@ -415,6 +445,8 @@ def backup_ui(stdscr):
                 dst_folder=dst,
                 stats=stats,
                 delete_source=delete,
+                backend=backend,
+                adb_serial=adb_serial,
                 progress_callback=on_progress,
                 log_callback=on_log,
                 cancel_event=cancel,
@@ -431,7 +463,7 @@ def backup_ui(stdscr):
         stdscr.erase()
         max_y, max_x = stdscr.getmaxyx()
 
-        stdscr.addstr(0, 0, f" Backing up: {display_name}", BOLD | GREEN)
+        stdscr.addstr(0, 0, f" Backing up: {display_name} | {backend_label}", BOLD | GREEN)
 
         # Progress bar
         done = stats.files_done + stats.files_skipped
@@ -596,9 +628,37 @@ def config_mode():
 # Main
 # ---------------------------------------------------------------------------
 
+def ensure_phones_dir():
+    """Make sure phones/ exists and has submodule content if configured."""
+    script_dir = Path(__file__).parent
+    phones_dir = script_dir / "phones"
+    gitmodules = script_dir / ".gitmodules"
+
+    if phones_dir.exists() and any(phones_dir.glob("*.yaml")):
+        return  # Already populated
+
+    # Try to initialize the submodule
+    if gitmodules.exists() and (script_dir / ".git").exists():
+        print("Initializing phones/ submodule...")
+        result = subprocess.run(
+            ["git", "submodule", "update", "--init", "phones"],
+            cwd=script_dir,
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and any(phones_dir.glob("*.yaml")):
+            print("Submodule initialized successfully.")
+            return
+        else:
+            print("Could not fetch submodule (you may not have access to the private repo).")
+
+    # Fallback: just create the directory
+    phones_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Created empty {phones_dir}/ directory. Connect a phone to generate configs.")
+
+
 def main():
     BACKUP_BASE.mkdir(parents=True, exist_ok=True)
-    PHONES_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_phones_dir()
 
     if len(sys.argv) > 1 and sys.argv[1] == "config":
         config_mode()
