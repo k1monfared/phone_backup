@@ -505,14 +505,40 @@ def backup_ui(stdscr):
     stdscr.nodelay(False)
     worker.join()
 
+    # Write failure report if any files failed
+    report_path = None
+    if stats.failed_files:
+        report_path = backup_root / f"failed_{today}_{datetime.now().strftime('%H%M%S')}.log"
+        with open(report_path, "w") as f:
+            f.write(f"Phone Backup Failure Report\n")
+            f.write(f"Date: {datetime.now().isoformat()}\n")
+            f.write(f"Phone: {display_name} ({phone_id})\n")
+            f.write(f"Backend: {backend_label}\n")
+            f.write(f"\n")
+            f.write(f"Summary: {stats.files_done} copied, {stats.files_skipped} skipped, {stats.files_failed} failed\n")
+            f.write(f"\nFailed files ({len(stats.failed_files)}):\n")
+            for fp in stats.failed_files:
+                f.write(f"  {fp}\n")
+
     # Final summary
     stdscr.erase()
     stdscr.addstr(0, 0, " Backup complete", BOLD | GREEN)
     stdscr.addstr(2, 2, f"Copied:  {stats.files_done}")
     stdscr.addstr(3, 2, f"Skipped: {stats.files_skipped}")
+    row = 4
     if stats.files_failed:
-        stdscr.addstr(4, 2, f"Failed:  {stats.files_failed}", RED)
-    stdscr.addstr(6, 0, " Press any key to exit.")
+        stdscr.addstr(row, 2, f"Failed:  {stats.files_failed} (retried once each)", RED)
+        row += 1
+        for fp in stats.failed_files[:10]:
+            stdscr.addstr(row, 4, fp[:max_x - 5], RED)
+            row += 1
+        if len(stats.failed_files) > 10:
+            stdscr.addstr(row, 4, f"... and {len(stats.failed_files) - 10} more", RED)
+            row += 1
+    if report_path:
+        stdscr.addstr(row + 1, 2, f"Report: {report_path}", DIM)
+        row += 2
+    stdscr.addstr(row + 1, 0, " Press any key to exit.")
     stdscr.refresh()
     stdscr.getch()
     return None

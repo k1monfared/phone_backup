@@ -19,6 +19,7 @@ class TransferStats:
     current_file_bytes: int = 0
     current_file_copied: int = 0
     current_tmp_path: str = ""
+    failed_files: list = field(default_factory=list)
     start_time: float = field(default_factory=time.time)
 
     @property
@@ -254,6 +255,17 @@ def transfer_folder(
             adb_serial=adb_serial,
             progress_callback=on_chunk,
         )
+        if not success:
+            # Retry once
+            stats.current_file_copied = 0
+            if log_callback:
+                log_callback(f"RETRY {rel_path}")
+            success = safe_copy_file(
+                src_file, dst_file,
+                backend=backend,
+                adb_serial=adb_serial,
+                progress_callback=on_chunk,
+            )
         if success:
             stats.file_done(src_file.stat().st_size)
             if log_callback:
@@ -268,6 +280,7 @@ def transfer_folder(
                         log_callback(f"DELETE_FAILED {rel_path}")
         else:
             stats.files_failed += 1
+            stats.failed_files.append(str(rel_path))
             if log_callback:
                 log_callback(f"FAILED {rel_path}")
         if progress_callback:
