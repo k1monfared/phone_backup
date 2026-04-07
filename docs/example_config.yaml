@@ -1,0 +1,55 @@
+# Example phone backup config
+# Copy this to phones/<your_phone_id>.yaml and edit as needed.
+# The phone_id comes from the MTP mount name (visible when you connect your phone).
+#
+# Three sections:
+#   sync     - backup and KEEP on phone
+#   move     - backup and DELETE from phone
+#   undecided - not yet categorized (shown as warning in the UI)
+#
+# Each entry has:
+#   source - path on the phone (relative to MTP mount)
+#   dest   - destination folder (relative to backup_root)
+#
+# On first run with a new phone, all folders are placed in 'undecided'
+# with auto-suggested dest mappings. Move them to sync or move as needed,
+# either by editing this file or pressing s/m in the backup UI.
+
+phone_id: samsung_galaxy_s24_R5CX1234AB
+phone_name: Samsung Galaxy S24
+backup_root: /home/user/backup/samsung_galaxy_s24_R5CX1234AB
+
+sync:
+# Music, podcasts, books (keep on phone for listening)
+- source: Internal shared storage/Music
+  dest: audio/music
+- source: Internal shared storage/Podcasts
+  dest: audio/podcasts
+- source: Internal shared storage/Audiobooks
+  dest: audio/audiobooks
+# Documents (keep on phone for reference)
+- source: Internal shared storage/Documents
+  dest: documents
+
+move:
+# Camera photos/videos (free up space)
+- source: Internal shared storage/DCIM/Camera
+  dest: photos/camera
+# Screenshots
+- source: Internal shared storage/Pictures/Screenshots
+  dest: photos/screenshots
+# Messaging app media
+- source: Internal shared storage/Pictures/WhatsApp
+  dest: photos/messaging
+- source: Internal shared storage/Pictures/Signal
+  dest: photos/messaging
+- source: Internal shared storage/Movies/WhatsApp
+  dest: videos/messaging
+# Voice recordings
+- source: Internal shared storage/Recordings
+  dest: audio/recordings
+# Downloads
+- source: Internal shared storage/Download
+  dest: downloads
+
+undecided: []

@@ -1,0 +1,70 @@
+- Phone Backup
+-- A terminal tool for backing up Android phones over USB (MTP).
+-- Connect your phone, run the tool, select folders, and go.
+
+- Features
+-- Detects MTP-connected Android phones automatically
+-- Per-phone YAML config with sync (keep on phone) and move (delete from phone) modes
+-- Interactive terminal UI with keyboard navigation
+--- Arrow keys to browse, spacebar to toggle, s/m to reassign folders between sections
+--- Folder sizes scanned in background
+--- Progress bar with ETA during transfers
+-- Safe transfers: copies to temp file first, verifies size, then renames. Source files are never deleted until the copy is confirmed.
+-- Incremental: skips files already backed up (same name and size)
+-- Config editor mode to manage multiple phones
+
+- Quick Start
+-- Install dependencies
+--- pip install -r requirements.txt
+-- Connect phone in file transfer (MTP) mode
+-- Run backup
+--- python phone_backup.py
+-- First run auto-detects your phone and creates a config file. Your editor opens so you can sort folders into sync or move sections.
+-- Subsequent runs show the folder list. Select what to back up and press Start.
+
+- Usage
+-- python phone_backup.py
+--- Main backup interface. Detects phone, shows folders, runs transfers.
+-- python phone_backup.py config
+--- Lists all known phones (with a * for connected ones). Pick one to edit its config.
+
+- Keyboard Controls (backup UI)
+-- Up/Down: move between folders
+-- Space: toggle folder selection
+-- s: move folder to sync section
+-- m: move folder to move section
+-- a: select all
+-- n: deselect all
+-- Tab: switch between folder list and action buttons
+-- Left/Right: move between actions
+-- Enter: activate action or toggle folder
+-- q: quit
+
+- Config Files
+-- Each phone gets a YAML config in the phones/ directory.
+-- See docs/example_config.yaml for the format.
+-- Three sections: sync, move, undecided.
+-- The phones/ directory is a private git submodule. To set up your own:
+--- 1. Create a private repo on GitHub
+--- 2. git submodule add <your-repo-url> phones
+--- 3. Or just create a phones/ directory locally (it works without being a submodule)
+
+- Configuration
+-- Edit the top of phone_backup.py to change:
+--- BACKUP_BASE: where backups go (default: ~/backup/)
+--- PHONES_DIR: where phone configs live (default: ./phones/)
+
+- Project Structure
+-- phone_backup.py: main script with terminal UI
+-- detector.py: MTP phone detection via GVFS
+-- config_manager.py: YAML config management and folder mapping heuristics
+-- transfer.py: safe file transfer engine with progress tracking
+-- phones/: per-phone config files (private submodule)
+-- docs/example_config.yaml: sample config for reference
+-- tests/: test suite (33 tests)
+
+- Requirements
+-- Python 3.12+
+-- PyYAML
+-- Linux with GVFS (for MTP phone access)
+-- Textual is listed in requirements.txt but not currently used by the UI

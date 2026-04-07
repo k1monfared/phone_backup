@@ -8,7 +8,5 @@ node_modules/
 *.claude-session
 
 # Phone backup
-phones/*.transfer.log
-phones/*.yaml
 __pycache__/
 *.pyc

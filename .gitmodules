@@ -1,0 +1,3 @@
+[submodule "phones"]
+	path = phones
+	url = https://github.com/k1monfared/phone-backup-configs.git
