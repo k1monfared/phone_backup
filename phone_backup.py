@@ -406,6 +406,23 @@ def backup_ui(stdscr):
     stats = TransferStats(total_files=total_files, total_bytes=total_bytes)
     BACKUP_BASE.mkdir(parents=True, exist_ok=True)
 
+    # Check disk space
+    import shutil as _shutil
+    disk = _shutil.disk_usage(str(BACKUP_BASE))
+    free_gb = disk.free / (1024 ** 3)
+    needed_gb = total_bytes / (1024 ** 3) if total_bytes > 0 else 0
+    if free_gb < 1.0 or (needed_gb > 0 and free_gb < needed_gb * 1.1):
+        stdscr.erase()
+        stdscr.addstr(0, 0, " Low disk space!", RED | BOLD)
+        stdscr.addstr(2, 2, f"Free: {free_gb:.1f} GB")
+        if needed_gb > 0:
+            stdscr.addstr(3, 2, f"Estimated needed: {needed_gb:.1f} GB")
+        stdscr.addstr(5, 2, "Press 'c' to continue anyway, or any other key to cancel.")
+        stdscr.refresh()
+        key = stdscr.getch()
+        if key != ord("c") and key != ord("C"):
+            return None
+
     # Transfer log
     log_path = PHONES_DIR / f"{phone_id}.transfer.log"
     log_file = open(log_path, "a")
@@ -427,22 +444,27 @@ def backup_ui(stdscr):
             log_lines.pop(0)
 
     def run_transfer():
-        for src, dst, delete in tasks:
-            if cancel.is_set():
-                on_log("CANCELLED by user")
-                break
-            on_log(f"START {'MOVE' if delete else 'SYNC'} {src.name} -> {dst}")
-            transfer_folder(
-                src_folder=src,
-                dst_folder=dst,
-                stats=stats,
-                delete_source=delete,
-                backend=backend,
-                adb_serial=adb_serial,
-                progress_callback=on_progress,
-                log_callback=on_log,
-                cancel_event=cancel,
-            )
+        try:
+            for src, dst, delete in tasks:
+                if cancel.is_set():
+                    on_log("CANCELLED by user")
+                    break
+                on_log(f"START {'MOVE' if delete else 'SYNC'} {src.name} -> {dst}")
+                transfer_folder(
+                    src_folder=src,
+                    dst_folder=dst,
+                    stats=stats,
+                    delete_source=delete,
+                    backend=backend,
+                    adb_serial=adb_serial,
+                    progress_callback=on_progress,
+                    log_callback=on_log,
+                    cancel_event=cancel,
+                )
+        except OSError as e:
+            on_log(f"ERROR: {e}")
+            if e.errno == 28:
+                on_log("DISK FULL. Backup stopped.")
         log_file.write(f"--- Transfer finished {datetime.now().isoformat()} ---\n")
         log_file.close()
 
@@ -509,16 +531,19 @@ def backup_ui(stdscr):
     report_path = None
     if stats.failed_files:
         report_path = backup_root / f"failed_{today}_{datetime.now().strftime('%H%M%S')}.log"
-        with open(report_path, "w") as f:
-            f.write(f"Phone Backup Failure Report\n")
-            f.write(f"Date: {datetime.now().isoformat()}\n")
-            f.write(f"Phone: {display_name} ({phone_id})\n")
-            f.write(f"Backend: {backend_label}\n")
-            f.write(f"\n")
-            f.write(f"Summary: {stats.files_done} copied, {stats.files_skipped} skipped, {stats.files_failed} failed\n")
-            f.write(f"\nFailed files ({len(stats.failed_files)}):\n")
-            for fp in stats.failed_files:
-                f.write(f"  {fp}\n")
+        try:
+            with open(report_path, "w") as f:
+                f.write(f"Phone Backup Failure Report\n")
+                f.write(f"Date: {datetime.now().isoformat()}\n")
+                f.write(f"Phone: {display_name} ({phone_id})\n")
+                f.write(f"Backend: {backend_label}\n")
+                f.write(f"\n")
+                f.write(f"Summary: {stats.files_done} copied, {stats.files_skipped} skipped, {stats.files_failed} failed\n")
+                f.write(f"\nFailed files ({len(stats.failed_files)}):\n")
+                for fp in stats.failed_files:
+                    f.write(f"  {fp}\n")
+        except OSError:
+            report_path = None
 
     # Final summary
     stdscr.erase()
