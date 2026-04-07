@@ -57,10 +57,11 @@ def test_scan_phone_folders(tmp_path):
     (storage / "Android" / "data").mkdir(parents=True)
     folders = scan_phone_folders(tmp_path)
     folder_strs = [str(f) for f in folders]
-    assert "Internal shared storage/DCIM/Camera" in folder_strs
+    # Top-level folders listed (not subfolders)
+    assert "Internal shared storage/DCIM" in folder_strs
     assert "Internal shared storage/Music" in folder_strs
-    assert "Internal shared storage/DCIM/.thumbnails" not in folder_strs
-    assert "Internal shared storage/Android/data" not in folder_strs
+    # Hidden and system folders excluded
+    assert "Internal shared storage/Android" not in folder_strs
 
 def test_create_phone_config(tmp_path):
     mount = tmp_path / "phone_mount"
@@ -84,7 +85,7 @@ def test_create_phone_config(tmp_path):
     assert loaded["backup_root"] == "/home/user/backup/test_phone_ABC123"
     assert loaded["sync"] == []
     assert loaded["move"] == []
-    assert len(loaded["undecided"]) == 2
+    assert len(loaded["undecided"]) == 2  # DCIM and Music
 
 def test_load_phone_config(tmp_path):
     phones_dir = tmp_path / "phones"

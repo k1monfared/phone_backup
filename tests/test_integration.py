@@ -34,12 +34,12 @@ def test_full_flow_new_phone(tmp_path):
     )
 
     assert config["phone_id"] == "samsung_galaxy_s24_R5ABC123"
-    assert len(config["undecided"]) >= 3
+    assert len(config["undecided"]) >= 3  # DCIM, Music, Download, WhatsApp
     assert config["sync"] == []
     assert config["move"] == []
 
     dests = {e["source"]: e["dest"] for e in config["undecided"]}
-    assert dests.get("Internal shared storage/DCIM/Camera") == "photos/camera"
+    assert dests.get("Internal shared storage/DCIM") == "photos/camera"
     assert dests.get("Internal shared storage/Music") == "audio/music"
     assert dests.get("Internal shared storage/Download") == "downloads"
 

@@ -44,6 +44,11 @@ def guess_dest_mapping(source_path: str) -> str:
 
 
 def scan_phone_folders(mount_path: Path) -> list[Path]:
+    """
+    Scan phone mount for top-level backup-worthy folders.
+    Returns one entry per folder (e.g. Audiobooks, DCIM, Music).
+    The transfer engine handles recursive copying of all contents.
+    """
     folders = []
     if not mount_path.exists():
         return folders
@@ -55,16 +60,7 @@ def scan_phone_folders(mount_path: Path) -> list[Path]:
                 continue
             if level1.name in SKIP_FOLDERS:
                 continue
-            has_subfolders = False
-            for level2 in sorted(level1.iterdir()):
-                if not level2.is_dir() or level2.name.startswith("."):
-                    continue
-                if level2.name in SKIP_FOLDERS:
-                    continue
-                folders.append(level2.relative_to(mount_path))
-                has_subfolders = True
-            if not has_subfolders:
-                folders.append(level1.relative_to(mount_path))
+            folders.append(level1.relative_to(mount_path))
     return folders
 
 
@@ -98,7 +94,12 @@ def load_phone_config(phone_id: str, phones_dir: Path) -> dict:
     if not config_file.exists():
         return None
     with open(config_file) as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+    # Normalize None to [] for list fields (empty YAML sections parse as None)
+    for key in ("sync", "move", "undecided"):
+        if config.get(key) is None:
+            config[key] = []
+    return config
 
 
 def save_phone_config(config: dict, phones_dir: Path) -> None:
