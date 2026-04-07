@@ -394,26 +394,14 @@ def backup_ui(stdscr):
         delete = it["section"] == "move"
         tasks.append((src, dst, delete))
 
-    # Pre-scan
-    stdscr.erase()
-    stdscr.addstr(0, 0, "Scanning folders...", BOLD)
-    stdscr.refresh()
-
+    # Use cached folder sizes from background scan instead of a slow pre-scan
     total_files = 0
     total_bytes = 0
-    for src, dst, _ in tasks:
-        if not src.exists():
-            continue
-        try:
-            for f in src.rglob("*"):
-                if f.is_file() and not f.name.startswith(".tmp_"):
-                    total_files += 1
-                    try:
-                        total_bytes += f.stat().st_size
-                    except OSError:
-                        pass
-        except OSError:
-            pass
+    for it in selected:
+        cached = folder_sizes.get(it["source"])
+        if cached:
+            total_files += cached[0]
+            total_bytes += cached[1]
 
     stats = TransferStats(total_files=total_files, total_bytes=total_bytes)
     BACKUP_BASE.mkdir(parents=True, exist_ok=True)
@@ -475,13 +463,15 @@ def backup_ui(stdscr):
         eta = format_eta(stats.eta_seconds)
 
         bar_width = min(max_x - 4, 60)
-        filled = int(bar_width * pct / 100)
-        bar = "#" * filled + "-" * (bar_width - filled)
-
-        stdscr.addstr(2, 2, f"[{bar}] {pct:.0f}%")
-        stdscr.addstr(3, 2, f"Files: {done} / {stats.total_files}  "
-                             f"({format_size(stats.bytes_done)} / {format_size(stats.total_bytes)})  "
-                             f"ETA: {eta}")
+        if stats.total_bytes > 0:
+            filled = int(bar_width * pct / 100)
+            bar = "#" * filled + "-" * (bar_width - filled)
+            stdscr.addstr(2, 2, f"[{bar}] {pct:.0f}%")
+            stdscr.addstr(3, 2, f"Files: {done} / {stats.total_files}  "
+                                 f"({format_size(stats.bytes_done)} / {format_size(stats.total_bytes)})  "
+                                 f"ETA: {eta}")
+        else:
+            stdscr.addstr(2, 2, f"Files: {done}  ({format_size(stats.bytes_done)})")
 
         if stats.current_file:
             cur = f"Current: {stats.current_file} ({format_size(stats.current_file_copied)} / {format_size(stats.current_file_bytes)})"
