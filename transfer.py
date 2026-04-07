@@ -18,6 +18,7 @@ class TransferStats:
     current_file: str = ""
     current_file_bytes: int = 0
     current_file_copied: int = 0
+    current_tmp_path: str = ""
     start_time: float = field(default_factory=time.time)
 
     @property
@@ -232,6 +233,7 @@ def transfer_folder(
         stats.current_file = src_file.name
         stats.current_file_bytes = src_file.stat().st_size
         stats.current_file_copied = 0
+        stats.current_tmp_path = str(dst_file.parent / f".tmp_{dst_file.name}")
         if should_skip_file(src_file, dst_file):
             stats.files_skipped += 1
             stats.file_done(src_file.stat().st_size)

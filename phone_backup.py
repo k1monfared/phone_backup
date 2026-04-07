@@ -474,7 +474,14 @@ def backup_ui(stdscr):
             stdscr.addstr(2, 2, f"Files: {done}  ({format_size(stats.bytes_done)})")
 
         if stats.current_file:
-            cur = f"Current: {stats.current_file} ({format_size(stats.current_file_copied)} / {format_size(stats.current_file_bytes)})"
+            # Poll temp file size for real-time progress with adb/gio backends
+            copied = stats.current_file_copied
+            if copied == 0 and stats.current_tmp_path:
+                try:
+                    copied = Path(stats.current_tmp_path).stat().st_size
+                except OSError:
+                    pass
+            cur = f"Current: {stats.current_file} ({format_size(copied)} / {format_size(stats.current_file_bytes)})"
             stdscr.addstr(4, 2, cur[:max_x - 3])
 
         # Log tail
