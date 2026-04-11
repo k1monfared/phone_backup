@@ -1,4 +1,5 @@
 """Safe file transfer engine with progress tracking."""
+import collections
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -19,6 +20,9 @@ class TransferStats:
     current_file_bytes: int = 0
     current_file_copied: int = 0
     current_tmp_path: str = ""
+    files_user_skipped: int = 0
+    files_deferred: int = 0
+    user_skipped_files: list = field(default_factory=list)
     failed_files: list = field(default_factory=list)
     start_time: float = field(default_factory=time.time)
 
@@ -73,14 +77,19 @@ def _copy_python(
     dst: Path,
     progress_callback: Callable[[int], None] = None,
     chunk_size: int = 4 * 1024 * 1024,
-) -> bool:
-    """Copy via Python file I/O. Slowest but always works."""
+    skip_event=None,
+) -> bool | None:
+    """Copy via Python file I/O. Slowest but always works.
+    Returns True on success, False on failure, None if user-skipped."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp_dst = dst.parent / f".tmp_{dst.name}"
     try:
         src_size = src.stat().st_size
         with open(src, "rb") as fsrc, open(tmp_dst, "wb") as fdst:
             while True:
+                if skip_event and skip_event.is_set():
+                    tmp_dst.unlink(missing_ok=True)
+                    return None
                 chunk = fsrc.read(chunk_size)
                 if not chunk:
                     break
@@ -98,17 +107,31 @@ def _copy_python(
         return False
 
 
-def _copy_gio(src: Path, dst: Path) -> bool:
-    """Copy via gio (GVFS optimized MTP backend). Faster than Python I/O."""
+def _copy_gio(src: Path, dst: Path, skip_event=None) -> bool | None:
+    """Copy via gio (GVFS optimized MTP backend). Faster than Python I/O.
+    Returns True on success, False on failure, None if user-skipped."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp_dst = dst.parent / f".tmp_{dst.name}"
     try:
         src_size = src.stat().st_size
-        result = subprocess.run(
+        proc = subprocess.Popen(
             ["gio", "copy", str(src), str(tmp_dst)],
-            capture_output=True, timeout=600,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
-        if result.returncode != 0:
+        deadline = time.time() + 600
+        while proc.poll() is None:
+            if skip_event and skip_event.is_set():
+                proc.terminate()
+                proc.wait(timeout=5)
+                tmp_dst.unlink(missing_ok=True)
+                return None
+            if time.time() > deadline:
+                proc.terminate()
+                proc.wait(timeout=5)
+                tmp_dst.unlink(missing_ok=True)
+                return False
+            time.sleep(0.2)
+        if proc.returncode != 0:
             tmp_dst.unlink(missing_ok=True)
             return False
         tmp_size = tmp_dst.stat().st_size
@@ -117,7 +140,7 @@ def _copy_gio(src: Path, dst: Path) -> bool:
             return False
         tmp_dst.rename(dst)
         return True
-    except (subprocess.TimeoutExpired, OSError):
+    except OSError:
         tmp_dst.unlink(missing_ok=True)
         return False
 
@@ -148,8 +171,9 @@ def _mtp_source_to_adb_path(src: Path) -> str | None:
     return f"/sdcard/{rest}"
 
 
-def _copy_adb(src: Path, dst: Path, adb_serial: str = None) -> bool:
-    """Copy via adb pull. Fastest, requires USB debugging enabled."""
+def _copy_adb(src: Path, dst: Path, adb_serial: str = None, skip_event=None) -> bool | None:
+    """Copy via adb pull. Fastest, requires USB debugging enabled.
+    Returns True on success, False on failure, None if user-skipped."""
     adb_path = _mtp_source_to_adb_path(src)
     if adb_path is None:
         return False
@@ -162,8 +186,21 @@ def _copy_adb(src: Path, dst: Path, adb_serial: str = None) -> bool:
             cmd.extend(["-s", adb_serial])
         cmd.extend(["pull", adb_path, str(tmp_dst)])
 
-        result = subprocess.run(cmd, capture_output=True, timeout=600)
-        if result.returncode != 0:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        deadline = time.time() + 600
+        while proc.poll() is None:
+            if skip_event and skip_event.is_set():
+                proc.terminate()
+                proc.wait(timeout=5)
+                tmp_dst.unlink(missing_ok=True)
+                return None
+            if time.time() > deadline:
+                proc.terminate()
+                proc.wait(timeout=5)
+                tmp_dst.unlink(missing_ok=True)
+                return False
+            time.sleep(0.2)
+        if proc.returncode != 0:
             tmp_dst.unlink(missing_ok=True)
             return False
 
@@ -175,7 +212,7 @@ def _copy_adb(src: Path, dst: Path, adb_serial: str = None) -> bool:
             return False
         tmp_dst.rename(dst)
         return True
-    except (subprocess.TimeoutExpired, OSError):
+    except OSError:
         tmp_dst.unlink(missing_ok=True)
         return False
 
@@ -186,16 +223,18 @@ def safe_copy_file(
     backend: str = "python",
     adb_serial: str = None,
     progress_callback: Callable[[int], None] = None,
-) -> bool:
+    skip_event=None,
+) -> bool | None:
     """
     Copy a file safely using the specified backend.
     All backends use temp file + rename for crash safety.
+    Returns True on success, False on failure, None if user-skipped.
     """
     if backend == "adb" and adb_serial:
-        return _copy_adb(src, dst, adb_serial)
+        return _copy_adb(src, dst, adb_serial, skip_event=skip_event)
     if backend == "gio":
-        return _copy_gio(src, dst)
-    return _copy_python(src, dst, progress_callback=progress_callback)
+        return _copy_gio(src, dst, skip_event=skip_event)
+    return _copy_python(src, dst, progress_callback=progress_callback, skip_event=skip_event)
 
 
 # ---------------------------------------------------------------------------
@@ -223,18 +262,26 @@ def transfer_folder(
     progress_callback: Callable[[], None] = None,
     log_callback: Callable[[str], None] = None,
     cancel_event=None,
+    skip_event=None,
+    defer_event=None,
 ) -> None:
     clean_tmp_files(dst_folder)
-    files = enumerate_files(src_folder)
-    for src_file in files:
+    file_list = enumerate_files(src_folder)
+    queue = collections.deque(file_list)
+    deferred_set = set()
+
+    while queue:
         if cancel_event and cancel_event.is_set():
             return
+
+        src_file = queue.popleft()
         rel_path = src_file.relative_to(src_folder)
         dst_file = dst_folder / rel_path
         stats.current_file = src_file.name
         stats.current_file_bytes = src_file.stat().st_size
         stats.current_file_copied = 0
         stats.current_tmp_path = str(dst_file.parent / f".tmp_{dst_file.name}")
+
         if should_skip_file(src_file, dst_file):
             stats.files_skipped += 1
             stats.file_done(src_file.stat().st_size)
@@ -243,6 +290,12 @@ def transfer_folder(
             if progress_callback:
                 progress_callback()
             continue
+
+        # Clear signals before starting this file
+        if skip_event:
+            skip_event.clear()
+        if defer_event:
+            defer_event.clear()
 
         def on_chunk(chunk_bytes):
             stats.current_file_copied += chunk_bytes
@@ -254,10 +307,43 @@ def transfer_folder(
             backend=backend,
             adb_serial=adb_serial,
             progress_callback=on_chunk,
+            skip_event=skip_event,
         )
+
+        # Check defer first (less destructive)
+        if defer_event and defer_event.is_set():
+            tmp_path = dst_file.parent / f".tmp_{dst_file.name}"
+            tmp_path.unlink(missing_ok=True)
+            if src_file not in deferred_set:
+                deferred_set.add(src_file)
+                queue.append(src_file)
+                stats.files_deferred += 1
+                if log_callback:
+                    log_callback(f"DEFER {rel_path}")
+            else:
+                stats.files_user_skipped += 1
+                stats.user_skipped_files.append(str(rel_path))
+                if log_callback:
+                    log_callback(f"SKIP(deferred twice) {rel_path}")
+            if progress_callback:
+                progress_callback()
+            continue
+
+        # User-skipped (copy backend returned None)
+        if success is None:
+            stats.files_user_skipped += 1
+            stats.user_skipped_files.append(str(rel_path))
+            if log_callback:
+                log_callback(f"USER_SKIP {rel_path}")
+            if progress_callback:
+                progress_callback()
+            continue
+
         if not success:
-            # Retry once
+            # Retry once (existing behavior)
             stats.current_file_copied = 0
+            if skip_event:
+                skip_event.clear()
             if log_callback:
                 log_callback(f"RETRY {rel_path}")
             success = safe_copy_file(
@@ -265,8 +351,10 @@ def transfer_folder(
                 backend=backend,
                 adb_serial=adb_serial,
                 progress_callback=on_chunk,
+                skip_event=skip_event,
             )
-        if success:
+
+        if success is True:
             stats.file_done(src_file.stat().st_size)
             if log_callback:
                 log_callback(f"{'MOVE' if delete_source else 'COPY'} {rel_path}")
@@ -278,6 +366,11 @@ def transfer_folder(
                 except OSError:
                     if log_callback:
                         log_callback(f"DELETE_FAILED {rel_path}")
+        elif success is None:
+            stats.files_user_skipped += 1
+            stats.user_skipped_files.append(str(rel_path))
+            if log_callback:
+                log_callback(f"USER_SKIP {rel_path}")
         else:
             stats.files_failed += 1
             stats.failed_files.append(str(rel_path))

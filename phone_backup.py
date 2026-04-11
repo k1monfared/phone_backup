@@ -430,6 +430,8 @@ def backup_ui(stdscr):
 
     log_lines = []
     cancel = threading.Event()
+    skip_event = threading.Event()
+    defer_event = threading.Event()
 
     def on_progress():
         pass  # We poll stats from the main loop
@@ -460,6 +462,8 @@ def backup_ui(stdscr):
                     progress_callback=on_progress,
                     log_callback=on_log,
                     cancel_event=cancel,
+                    skip_event=skip_event,
+                    defer_event=defer_event,
                 )
         except OSError as e:
             on_log(f"ERROR: {e}")
@@ -506,8 +510,12 @@ def backup_ui(stdscr):
             cur = f"Current: {stats.current_file} ({format_size(copied)} / {format_size(stats.current_file_bytes)})"
             stdscr.addstr(4, 2, cur[:max_x - 3])
 
+        if stats.files_user_skipped > 0 or stats.files_deferred > 0:
+            skip_info = f"Skipped: {stats.files_user_skipped}  Deferred: {stats.files_deferred}"
+            stdscr.addstr(5, 2, skip_info[:max_x - 3], YELLOW)
+
         # Log tail
-        log_start = 6
+        log_start = 7
         visible = max_y - log_start - 2
         tail = log_lines[-visible:] if visible > 0 else []
         for li, line in enumerate(tail):
@@ -515,12 +523,16 @@ def backup_ui(stdscr):
             if r < max_y - 1:
                 stdscr.addstr(r, 2, line[:max_x - 3], DIM)
 
-        stdscr.addstr(max_y - 1, 0, " Press 'c' to cancel", DIM)
+        stdscr.addstr(max_y - 1, 0, " 's':skip file  'd':defer file  'c':cancel all", DIM)
         stdscr.refresh()
 
         key = stdscr.getch()
         if key == ord("c") or key == ord("C"):
             cancel.set()
+        elif key == ord("s") or key == ord("S"):
+            skip_event.set()
+        elif key == ord("d") or key == ord("D"):
+            defer_event.set()
 
         time.sleep(0.3)
 
@@ -538,7 +550,8 @@ def backup_ui(stdscr):
                 f.write(f"Phone: {display_name} ({phone_id})\n")
                 f.write(f"Backend: {backend_label}\n")
                 f.write(f"\n")
-                f.write(f"Summary: {stats.files_done} copied, {stats.files_skipped} skipped, {stats.files_failed} failed\n")
+                f.write(f"Summary: {stats.files_done} copied, {stats.files_skipped} skipped, "
+                        f"{stats.files_user_skipped} user-skipped, {stats.files_failed} failed\n")
                 f.write(f"\nFailed files ({len(stats.failed_files)}):\n")
                 for fp in stats.failed_files:
                     f.write(f"  {fp}\n")
@@ -551,6 +564,12 @@ def backup_ui(stdscr):
     stdscr.addstr(2, 2, f"Copied:  {stats.files_done}")
     stdscr.addstr(3, 2, f"Skipped: {stats.files_skipped}")
     row = 4
+    if stats.files_user_skipped:
+        stdscr.addstr(row, 2, f"User-skipped: {stats.files_user_skipped} (will retry next run)", YELLOW)
+        row += 1
+    if stats.files_deferred:
+        stdscr.addstr(row, 2, f"Deferred (retried at end): {stats.files_deferred}", DIM)
+        row += 1
     if stats.files_failed:
         stdscr.addstr(row, 2, f"Failed:  {stats.files_failed} (retried once each)", RED)
         row += 1
